@@ -1,40 +1,51 @@
 mod auth;
 mod generation;
+mod models;
+mod account;
+mod schemas;
 
-use actix_web::{get , Responder , HttpResponse , HttpServer , App , middleware::Logger, web::{self, Redirect}, HttpRequest, http::StatusCode, cookie::Cookie, dev::{ResourcePath, ServiceRequest, ServiceResponse}, HttpResponseBuilder};
-use actix_files as fs;
-use fs::{FilesService, NamedFile};
-use generation::{QuestionTemplate, Difficulty , Question};
+use actix_web::{ HttpResponse , HttpServer , App , middleware::Logger, web};
+use diesel_async::AsyncMysqlConnection;
+use diesel_async::pooled_connection::AsyncDieselConnectionManager;
+use diesel_async::pooled_connection::deadpool::Pool;
+use actix_cors::Cors;
 
+#[derive(Clone)]
 pub struct State {
-    message : String
+    pool : Pool<AsyncMysqlConnection>
+}
+impl State {
+    fn connect() -> std::io::Result<Self> {
+        let config = AsyncDieselConnectionManager::<AsyncMysqlConnection>::new(std::env::var("DATABASE_URL").unwrap_or("mysql://root@localhost:3306/echo".to_string()));
+        let pool = Pool::builder(config).build().expect("Failed to connect wa");
+        Ok(Self { pool })
+    }
 }
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    //let question : Question = QuestionTemplate::generate(Difficulty::Easy);
     env_logger::init_from_env(env_logger::Env::new().default_filter_or("info"));
     HttpServer::new(|| {
         App::new()
+        .app_data(web::Data::new(State::connect().expect("Failed")))
         .wrap(Logger::new("%U %s %Dms"))
-        .service(real)
+        .wrap(Cors::default()
+                .allowed_methods(vec!["GET","POST"])
+                .supports_credentials()
+                .allowed_origin("http://localhost:8080")
+        )
         .service(
             web::scope("/auth")
                     .service(auth::register)
                     .service(auth::login)
         )
-    }).bind(("127.0.0.1" , 8080))?.run().await?;
+        .service(web::scope("/account")
+                    .service(account::details)
+        )
+        .service(actix_files::Files::new("/" , "./client/dist").index_file("index.html"))
+        .default_service(web::to(|| async {
+            HttpResponse::Ok().body(std::fs::read_to_string("./client/dist/index.html").unwrap())
+        }))
+    }).bind("127.0.0.1:8080")?.run().await?;
     Ok(())
 }
-
-#[get("/")]
-async fn real() -> std::io::Result<impl Responder> {
-    Ok(HttpResponse::Ok().body(std::fs::read_to_string("src/main.rs")?))
-}
-
-/*.service(fs::Files::new("/" , "./client/dist").index_file("index.html").default_handler(|req : ServiceRequest| async {
-            let (req , _) = req.into_parts();
-            let file = NamedFile::open_async("./client/dist/index.html").await.unwrap();
-            let res = file.into_response(&req);
-            Ok(ServiceResponse::new(req , res))
-        }))*/
